@@ -4,7 +4,7 @@ import { plainToClass } from 'class-transformer';
 import { container } from '../di/container';
 import { redisClient } from '../cache/redis';
 import { AppEventEmitter } from '../events/EventEmitter';
-import { FastifySchema } from 'fastify';
+import { FastifySchema, RouteShorthandOptions } from 'fastify';
 
 import { v4 as uuidv4 } from 'uuid';
 
@@ -18,7 +18,10 @@ type RouteOptions = {
   schema?: FastifySchema;
   response?: any;
   body?: any;
-};
+  summary?: string;
+  tags?: string[];
+  description?: string;
+} & Omit<RouteShorthandOptions, 'schema' | 'handler' | 'url' | 'method'>;
 
 export function Ctx() {
   return function (target: Object, propertyKey: string | symbol, parameterIndex: number) {
@@ -65,25 +68,42 @@ function createRouteDecorator(method: string) {
     return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
       const routes = Reflect.getMetadata('routes', target.constructor) || [];
 
-      const routeOptions: any = { ...options.schema };
+      // Build the Fastify route options object
+      const fastifyRouteOptions: any = {
+        // Spread any other Fastify RouteShorthandOptions properties
+        ...options,
+        // Handle schema specifically
+        schema: options.schema || {},
+      };
 
+      // Add Swagger-specific properties directly to fastifyRouteOptions
+      if (options.summary) fastifyRouteOptions.summary = options.summary;
+      if (options.tags) fastifyRouteOptions.tags = options.tags;
+      if (options.description) fastifyRouteOptions.description = options.description;
+
+      // Handle custom 'response' property to transform it into Fastify's schema.response
       if (options.response) {
         const responseSchemaName = options.response.name;
-        routeOptions.response = {
-          200: { $ref: responseSchemaName },
+        if (!fastifyRouteOptions.schema) fastifyRouteOptions.schema = {};
+        fastifyRouteOptions.schema.response = {
+          200: { $ref: `#/definitions/${responseSchemaName}` },
         };
       }
 
+      // Handle custom 'body' property to transform it into Fastify's schema.body
       if (options.body) {
         const bodySchemaName = options.body.name;
-        routeOptions.body = { $ref: bodySchemaName };
+        if (!fastifyRouteOptions.schema) fastifyRouteOptions.schema = {};
+        fastifyRouteOptions.schema.body = {
+          $ref: `#/definitions/${bodySchemaName}`,
+        };
       }
 
-      routes.push({ 
-        method: method.toUpperCase(), 
-        path: path, 
-        handlerName: propertyKey, 
-        options: routeOptions 
+      routes.push({
+        method: method.toUpperCase(),
+        path: path,
+        handlerName: propertyKey,
+        options: fastifyRouteOptions,
       });
       Reflect.defineMetadata('routes', routes, target.constructor);
     };

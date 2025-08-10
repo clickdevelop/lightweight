@@ -8,14 +8,15 @@ const inquirer = require('inquirer');
 const chalk = require('chalk').default;
 const crypto = require('crypto'); // Adicionado
 
+
 // ASCII Art Banner
 const banner = `
 ${chalk.bold.rgb(255, 165, 0)("  _     _       _ _         _             _ _ _ _ ")}
 ${chalk.bold.rgb(255, 165, 0)(" | |   (_)     | (_)       | |           (_) | (_) |")}
 ${chalk.bold.rgb(255, 165, 0)(" | |    _ _ __ | |_ ___ ___| |__  _ __   ___| |_| |_| |")}
-${chalk.bold.rgb(255, 165, 0)(" | |   | | '_ \\| | / __/ __| '_ \\| '_ \\ / __| __| __| |")}
-${chalk.bold.rgb(255, 165, 0)(" | |___| | | | | | \\__ \\__ \\ |_) | |_) | (__| |_| |_| |")}
-${chalk.bold.rgb(255, 165, 0)(" |______|_|_| |_|_|_|___/___/_.__/| .__/ \\___|\\__|\\__|_|")}
+${chalk.bold.rgb(255, 165, 0)(" | |   | | '_ \| | / __/ __| '_ \| '_ \ / __| __| __| |")}
+${chalk.bold.rgb(255, 165, 0)(" | |___| | | | | | \__ \__ \ |_) | |_) | (__| |_| |_| |")}
+${chalk.bold.rgb(255, 165, 0)(" |______|_|_| |_|_|_|___/___/_.__/| .__/ \___|\__|\__|_|")}
 ${chalk.bold.rgb(255, 165, 0)("                                  | |                  ")}
 ${chalk.bold.rgb(255, 165, 0)("                                  |_|                  ")}
 
@@ -46,10 +47,7 @@ export class ${name}Controller {
   @Get('/', {
     schema: {
       summary: 'Get all tasks',
-      tags: ['${name}s'],
-      response: {
-        200: { type: 'array', items: { $ref: '#/definitions/${name}' } }
-      }
+      tags: ['Tasks'],
     }
   })
   findAll() {
@@ -59,13 +57,10 @@ export class ${name}Controller {
   @Get('/:id', {
     schema: {
       summary: 'Get task by ID',
-      tags: ['${name}s'],
+      tags: ['Tasks'],
       params: {
         id: { type: 'string', format: 'uuid' }
       },
-      response: {
-        200: { $ref: '#/definitions/${name}' }
-      }
     }
   })
   findById(@Param('id') id: string) {
@@ -75,11 +70,8 @@ export class ${name}Controller {
   @Post('/', {
     schema: {
       summary: 'Create task',
-      tags: ['${name}s'],
+      tags: ['Tasks'],
       body: { $ref: '#/definitions/Create${name}Dto' },
-      response: {
-        201: { $ref: '#/definitions/${name}' }
-      }
     }
   })
   create(@Body() createDto: Create${name}Dto) {
@@ -89,14 +81,11 @@ export class ${name}Controller {
   @Put('/:id', {
     schema: {
       summary: 'Update task',
-      tags: ['${name}s'],
+      tags: ['Tasks'],
       params: {
         id: { type: 'string', format: 'uuid' }
       },
       body: { $ref: '#/definitions/Update${name}Dto' },
-      response: {
-        200: { $ref: '#/definitions/${name}' }
-      }
     }
   })
   update(@Param('id') id: string, @Body() updateDto: Update${name}Dto) {
@@ -106,13 +95,10 @@ export class ${name}Controller {
   @Delete('/:id', {
     schema: {
       summary: 'Delete task',
-      tags: ['${name}s'],
+      tags: ['Tasks'],
       params: {
         id: { type: 'string', format: 'uuid' }
       },
-      response: {
-        204: { type: 'null' }
-      }
     }
   })
   delete(@Param('id') id: string) {
@@ -216,6 +202,99 @@ async function createFile(filePath, content) {
   console.log(`Created: ${path.relative(process.cwd(), filePath)}`);
 }
 
+const generateAuthDtoTemplate = () => `import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
+
+export class LoginDto {
+  @IsString()
+  @IsNotEmpty()
+  username!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+}
+`;
+
+const generateAuthControllerTemplate = () => `import { Controller, Post, Body, Ctx } from '../../framework/decorators';
+import { LoginDto } from '../dtos/auth.dto';
+import { AuthService } from '../../framework/auth/auth.service';
+import { container } from '../../framework/di/container';
+import jwt from 'jsonwebtoken';
+import { env } from '../../framework/config/env';
+import { FastifyReply } from 'fastify';
+import { redisClient } from '../../framework/cache/redis';
+
+@Controller('/auth')
+export class AuthController {
+  private authService: AuthService;
+
+  constructor() {
+    this.authService = container.resolve('AuthService');
+  }
+
+  @Post('/login', {
+    summary: 'User login',
+    tags: ['Auth'],
+    schema: {
+      body: { $ref: '#/definitions/LoginDto' },
+      response: {
+        200: { type: 'object', properties: { message: { type: 'string' } } },
+        401: { type: 'object', properties: { message: { type: 'string' } } },
+      },
+    },
+  })
+  async login(@Body() loginDto: LoginDto, @Ctx() reply: FastifyReply) {
+    const user = await this.authService.validateUser(loginDto.username, loginDto.password);
+
+    if (!user) {
+      throw { statusCode: 401, message: 'Invalid credentials' };
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.username }, env.JWT_SECRET!, { expiresIn: '1h' });
+
+    reply.setCookie('token', token, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      path: '/',
+      sameSite: 'strict',
+    });
+
+    return { message: 'Login successful' };
+  }
+
+  @Post('/logout', {
+    summary: 'User logout',
+    tags: ['Auth'],
+    schema: {
+      response: {
+        200: { type: 'object', properties: { message: { type: 'string' } } },
+      },
+    },
+  })
+  async logout(@Ctx() reply: FastifyReply) {
+    const token = reply.request.cookies.token;
+
+    if (token && redisClient) {
+      try {
+        const decoded = jwt.verify(token, env.JWT_SECRET!) as { exp: number };
+        const expiry = decoded.exp;
+        const now = Math.floor(Date.now() / 1000);
+        const ttl = expiry - now;
+
+        if (ttl > 0) {
+          await redisClient.set('blocklist:' + token, 'blocked', 'EX', ttl);
+        }
+      } catch (error) {
+        console.error('Error adding token to blocklist:', error);
+      }
+    }
+
+    reply.clearCookie('token', { path: '/' });
+    return { message: 'Logout successful' };
+  }
+}
+`;
+
 // --- CLI COMMANDS ---
 
 program
@@ -226,18 +305,14 @@ program
     const templatePath = path.resolve(__dirname, '..');
 
     console.log(`Creating project '${projectName}'...`);
-    fs.copySync(templatePath, projectPath, { filter: (src) => !/lightspringts-cli|node_modules|dist|\\.git/.test(src) });
+    fs.copySync(templatePath, projectPath, { filter: (src) => !/lightspringts-cli|node_modules|dist|\.git/.test(src) });
 
     const answers = await inquirer.default.prompt([
         { type: 'list', name: 'architecture', message: 'Which architecture would you like to use?', choices: [ { name: 'Model-View-Controller (MVC)', value: 'mvc' }, { name: 'Hexagonal Architecture', value: 'hexagonal' }, { name: 'None (basic structure only)', value: 'none' } ], default: 'mvc' },
         { type: 'confirm', name: 'enableAuth', message: 'Enable JWT authentication?', default: true },
     ]);
 
-    let envContent = `ARCHITECTURE=${answers.architecture}
-AUTH_ENABLED=${answers.enableAuth}
-PORT=2000
-DB_DIALECT=postgres
-`;
+    let envContent = `ARCHITECTURE=${answers.architecture}\nAUTH_ENABLED=${answers.enableAuth}\nPORT=2000\nDB_DIALECT=postgres\n`;
     if (answers.enableAuth) {
         const jwtSecretChoice = await inquirer.default.prompt([
             {
@@ -277,13 +352,79 @@ DB_DIALECT=postgres
         for (const key in dbAnswers) { envContent += `${key}=${dbAnswers[key]}\n`; }
     }
     await createFile(path.join(projectPath, '.env'), envContent);
+    // --- START: Logic to process application.ts based on auth ---
+    let appTsContent = fs.readFileSync(path.join(projectPath, 'src/application.ts'), 'utf8');
+
+    if (!answers.enableAuth) {
+        // Comment out AUTH_IMPORTS
+        appTsContent = appTsContent.replace(
+            /\/\/ {{AUTH_IMPORTS_START}}\n(?:.|\n)*?\/\/ {{AUTH_IMPORTS_END}}\n/gs, // Match the markers and everything in between, including the final newline
+            '' // Replace with an empty string to remove the entire block
+        );
+        // Comment out AUTH_SETUP
+        appTsContent = appTsContent.replace(
+            /\/\/ {{AUTH_SETUP_START}}\n(?:.|\n)*?\/\/ {{AUTH_SETUP_END}}\n/gs,
+            ''
+        );
+        // Comment out AUTH_BOOTSTRAP
+        appTsContent = appTsContent.replace(
+            /\/\/ {{AUTH_BOOTSTRAP_START}}\n(?:.|\n)*?\/\/ {{AUTH_BOOTSTRAP_END}}\n/gs,
+            ''
+        );
+        // Comment out AUTH_HOOK
+        appTsContent = appTsContent.replace(
+            /\/\/ {{AUTH_HOOK_START}}\n(?:.|\n)*?\/\/ {{AUTH_HOOK_END}}\n/gs,
+            ''
+        );
+    }
+    fs.writeFileSync(path.join(projectPath, 'src/application.ts'), appTsContent);
+    console.log('Updated: src/application.ts');
+    // --- END: Logic to process application.ts based on auth ---
+
+    // Process the application.ts template
+    
+
+    // Process the index.html template
+    // --- START: Logic to process public/index.html and public/login.html ---
+    const cliPublicPath = path.resolve(__dirname, '..', 'public');
+    const projectPublicPath = path.join(projectPath, 'public');
+
+    // Ensure the project's public directory exists
+    await fs.ensureDir(projectPublicPath);
+
+    if (answers.enableAuth) {
+        // If auth is enabled, copy both dashboard and login pages
+        await fs.copy(path.join(cliPublicPath, 'index.html'), path.join(projectPublicPath, 'index.html'));
+        await fs.copy(path.join(cliPublicPath, 'login.html'), path.join(projectPublicPath, 'login.html'));
+        console.log('Copied: public/index.html and public/login.html');
+    } else {
+        // If auth is disabled, copy only the no-auth welcome page
+        await fs.copy(path.join(cliPublicPath, 'no-auth-welcome.html'), path.join(projectPublicPath, 'index.html'));
+        console.log('Copied: public/no-auth-welcome.html as public/index.html');
+        // Ensure login.html is not present if auth is disabled
+        fs.removeSync(path.join(projectPublicPath, 'login.html'));
+        console.log('Removed: public/login.html (auth disabled)');
+    }
+    // --- END: Logic to process public/index.html and public/login.html ---
 
     if (answers.architecture !== 'none') {
-        console.log('Scaffolding default CRUD for \'Task\'...');
+        console.log("Scaffolding default CRUD for 'Task'...");
         await createFile(path.join(projectPath, 'src/controllers/task.controller.ts'), generateFullControllerTemplate('Task'));
         await createFile(path.join(projectPath, 'src/services/task.service.ts'), generateServiceTemplate('Task'));
         await createFile(path.join(projectPath, 'src/dtos/task.dto.ts'), generateDtoTemplate('Task'));
         await createFile(path.join(projectPath, 'src/models/task.model.ts'), generateModelTemplate('Task'));
+    }
+
+    // Conditionally create or remove auth files
+    if (answers.enableAuth) {
+      console.log('Scaffolding JWT authentication files...');
+      await createFile(path.join(projectPath, 'src/controllers/auth.controller.ts'), generateAuthControllerTemplate());
+      await createFile(path.join(projectPath, 'src/dtos/auth.dto.ts'), generateAuthDtoTemplate());
+    } else {
+      // If auth is disabled, ensure the files are removed if they were copied from the template
+      fs.removeSync(path.join(projectPath, 'src/controllers/auth.controller.ts'));
+      fs.removeSync(path.join(projectPath, 'src/dtos/auth.dto.ts'));
+      console.log('JWT authentication disabled. Removed auth files.');
     }
 
     console.log('Installing dependencies...');

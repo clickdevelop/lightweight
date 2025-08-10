@@ -2,18 +2,21 @@ require('dotenv').config();
 import 'reflect-metadata';
 import fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { container, Constructor } from '../framework/di/container';
+// {{AUTH_IMPORTS_START}}
 import { AuthService } from '../framework/auth/auth.service';
+import { authenticate } from '../framework/middleware/auth';
+// {{AUTH_IMPORTS_END}}
 import { sequelize } from '../framework/config/sequelize';
 import { env } from '../framework/config/env';
 import * as fs from 'fs';
 import * as path from 'path';
 import { validationMetadatasToSchemas } from 'class-validator-jsonschema';
-import { authenticate } from '../framework/middleware/auth';
 import { paramMetadataKey, contextMetadataKey } from '../framework/decorators';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 
 import cookie from '@fastify/cookie';
+import '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
@@ -35,13 +38,18 @@ function loadModulesFromDirectory(directory: string, filter: RegExp): void {
 
 async function startServer() {
     console.log('Loading application modules to register metadata...');
+    console.log('Loading models...');
     loadModulesFromDirectory('models', /\.model\.(ts|js)$/);
+    console.log('Models loaded.');
+    console.log('Loading dtos...');
     loadModulesFromDirectory('dtos', /\.dto\.(ts|js)$/);
+    console.log('DTOs loaded.');
+    console.log('Loading services...');
     loadModulesFromDirectory('services', /\.service\.(ts|js)$/);
+    console.log('Services loaded.');
 
-    // Register and instantiate AuthService for bootstrapping
-    container.register('AuthService', AuthService);
-    container.resolve('AuthService');
+    // {{AUTH_SETUP_START}}
+    // {{AUTH_SETUP_END}}
 
     const app = fastify({
         logger: { level: env.LOG_LEVEL || 'info', transport: { target: 'pino-pretty', options: { colorize: true } } },
@@ -54,10 +62,14 @@ async function startServer() {
             await sequelize.sync({ force: false });
             console.log('Database synchronized.');
 
-            // Mover a inicialização do AuthService para cá
-            container.register('AuthService', AuthService, { scope: 'singleton' });
-            const authServiceInstance = container.resolve('AuthService') as AuthService;
-            await authServiceInstance['bootstrapAdminUser'](); // Chamar explicitamente o método
+            // {{AUTH_BOOTSTRAP_START}}
+            if (env.AUTH_ENABLED) {
+                // Mover a inicialização do AuthService para cá
+                container.register('AuthService', AuthService, { scope: 'singleton' });
+                const authServiceInstance = container.resolve('AuthService') as AuthService;
+                await authServiceInstance['bootstrapAdminUser'](); // Chamar explicitamente o método
+            }
+            // {{AUTH_BOOTSTRAP_END}}
 
         } catch (error) {
             console.error('Database connection failed:', error);
@@ -69,20 +81,23 @@ async function startServer() {
     await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
     await app.register(cookie);
     await app.register(fastifyStatic, { root: path.join(process.cwd(), 'public') });
+    
+    // {{AUTH_HOOK_START}}
     if (env.AUTH_ENABLED) {
         const publicRoutes = ['/auth/login', '/docs', '/login.html', '/js/login.js']; // Rotas públicas
         app.addHook('onRequest', authenticate(env.JWT_SECRET!, publicRoutes));
     }
+    // {{AUTH_HOOK_END}}
 
     // Generate schemas from the global metadata storage, using the OpenAPI 3.0 standard for references
     const schemas = validationMetadatasToSchemas({
-        refPointerPrefix: '#/components/schemas/',
+        refPointerPrefix: '#/definitions/',
     });
 
     // Explicitly register each schema with Fastify before registering swagger
     for (const schemaName in schemas) {
         app.addSchema({
-            $id: schemaName,
+            $id: `#/definitions/${schemaName}`,
             ...schemas[schemaName],
         });
     }
