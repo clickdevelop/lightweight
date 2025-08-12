@@ -24,14 +24,21 @@ import swaggerUi from '@fastify/swagger-ui';
 // Helper to dynamically load all modules in a directory to execute their decorators
 function loadModulesFromDirectory(directory: string, filter: RegExp): void {
     const dirPath = path.join(process.cwd(), 'src', directory);
-    if (!fs.existsSync(dirPath)) return;
+    console.log(`[DEBUG] loadModulesFromDirectory: Checking directory: ${dirPath}`); // DEBUG
+    if (!fs.existsSync(dirPath)) {
+        console.log(`[DEBUG] loadModulesFromDirectory: Directory does not exist: ${dirPath}`); // DEBUG
+        return;
+    }
 
     const files = fs.readdirSync(dirPath).filter(file => filter.test(file));
+    console.log(`[DEBUG] loadModulesFromDirectory: Found files in ${directory}:`, files); // DEBUG
+
     for (const file of files) {
         try {
             require(path.join(dirPath, file));
+            console.log(`[DEBUG] loadModulesFromDirectory: Successfully loaded module: ${file}`); // DEBUG
         } catch (error) {
-            console.error(`Failed to load module ${file}:`, error);
+            console.error(`[DEBUG] Failed to load module ${file}:`, error); // DEBUG
         }
     }
 }
@@ -117,8 +124,11 @@ async function startServer() {
     console.log('Swagger UI available at /docs');
 
     const controllersDir = path.join(process.cwd(), 'src', 'controllers');
+    console.log(`[DEBUG] Controller directory path: ${controllersDir}`); // DEBUG
     if (fs.existsSync(controllersDir)) {
+        console.log(`[DEBUG] Controller directory exists: ${controllersDir}`); // DEBUG
         const controllerFiles = fs.readdirSync(controllersDir).filter(file => /\.controller\.(ts|js)$/.test(file));
+        console.log(`[DEBUG] Found controller files:`, controllerFiles); // DEBUG
         console.log(`Found ${controllerFiles.length} controller(s). Registering routes...`);
 
         for (const file of controllerFiles) {
@@ -127,6 +137,7 @@ async function startServer() {
                 const ControllerClass = controllerModule[key];
                 if (typeof ControllerClass === 'function' && Reflect.getMetadata('basePath', ControllerClass)) {
                     const basePath = Reflect.getMetadata('basePath', ControllerClass);
+                    console.log(`[DEBUG] Found Controller: ${ControllerClass.name} with basePath: ${basePath}`); // DEBUG
                     const routes = Reflect.getMetadata('routes', ControllerClass) || [];
 
                     const paramTypes: Constructor[] = Reflect.getMetadata('design:paramtypes', ControllerClass) || [];

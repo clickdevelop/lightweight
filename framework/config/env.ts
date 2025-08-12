@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-dotenv.config();
 
 // This file reads environment variables and provides them to the application.
 // It's crucial that no default credentials or sensitive data are hardcoded here.
