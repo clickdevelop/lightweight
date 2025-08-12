@@ -1,3 +1,4 @@
+require('ts-node/register');
 const path = require('path');
 const { env } = require(path.resolve(__dirname, '../config/env'));
 

@@ -2,19 +2,19 @@ require('dotenv').config();
 import 'reflect-metadata';
 import fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { container, Constructor } from '../framework/di/container';
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 // {{AUTH_IMPORTS_START}}
 import { AuthService } from '../framework/auth/auth.service';
 import { authenticate } from '../framework/middleware/auth';
 // {{AUTH_IMPORTS_END}}
 import { sequelize } from '../framework/config/sequelize';
 import { env } from '../framework/config/env';
-import * as fs from 'fs';
-import * as path from 'path';
 import { validationMetadatasToSchemas } from 'class-validator-jsonschema';
 import { paramMetadataKey, contextMetadataKey } from '../framework/decorators';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-
 import cookie from '@fastify/cookie';
 import '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -49,6 +49,9 @@ async function startServer() {
     console.log('Services loaded.');
 
     // {{AUTH_SETUP_START}}
+    if (env.AUTH_ENABLED) {
+        container.register('AuthService', AuthService, { scope: 'singleton' });
+    }
     // {{AUTH_SETUP_END}}
 
     const app = fastify({
@@ -59,20 +62,14 @@ async function startServer() {
         try {
             await sequelize.authenticate();
             console.log('Database connection established.');
-            await sequelize.sync({ force: false });
-            console.log('Database synchronized.');
 
-            // {{AUTH_BOOTSTRAP_START}}
-            if (env.AUTH_ENABLED) {
-                // Mover a inicialização do AuthService para cá
-                container.register('AuthService', AuthService, { scope: 'singleton' });
-                const authServiceInstance = container.resolve('AuthService') as AuthService;
-                await authServiceInstance['bootstrapAdminUser'](); // Chamar explicitamente o método
-            }
-            // {{AUTH_BOOTSTRAP_END}}
+            // Executar migrations automaticamente
+            console.log('Running database migrations...');
+            execSync('npx sequelize-cli db:migrate', { stdio: 'inherit' });
+            console.log('Database migrations completed.');
 
         } catch (error) {
-            console.error('Database connection failed:', error);
+            console.error('Database connection/migration failed:', error);
             process.exit(1);
         }
     }
@@ -84,17 +81,15 @@ async function startServer() {
     
     // {{AUTH_HOOK_START}}
     if (env.AUTH_ENABLED) {
-        const publicRoutes = ['/auth/login', '/docs', '/login.html', '/js/login.js']; // Rotas públicas
+        const publicRoutes = ['/auth/login', '/docs', '/login.html', '/js/login.js', '/users']; // Tornando /users público para o primeiro usuário
         app.addHook('onRequest', authenticate(env.JWT_SECRET!, publicRoutes));
     }
     // {{AUTH_HOOK_END}}
 
-    // Generate schemas from the global metadata storage, using the OpenAPI 3.0 standard for references
     const schemas = validationMetadatasToSchemas({
         refPointerPrefix: '#/definitions/',
     });
 
-    // Explicitly register each schema with Fastify before registering swagger
     for (const schemaName in schemas) {
         app.addSchema({
             $id: `#/definitions/${schemaName}`,
@@ -105,10 +100,17 @@ async function startServer() {
     await app.register(swagger, {
         openapi: {
             info: { title: 'LightSpringTS API', version: '1.0.0' },
-            // Pass the schemas to the components section for the OpenAPI document
             components: {
                 schemas: schemas as any,
+                securitySchemes: {
+                    bearerAuth: {
+                        type: 'http',
+                        scheme: 'bearer',
+                        bearerFormat: 'JWT',
+                    },
+                },
             },
+            security: [{ bearerAuth: [] }],
         },
     });
     await app.register(swaggerUi, { routePrefix: '/docs' });
@@ -127,28 +129,15 @@ async function startServer() {
                     const basePath = Reflect.getMetadata('basePath', ControllerClass);
                     const routes = Reflect.getMetadata('routes', ControllerClass) || [];
 
-                    // Removendo a injeção automática de serviços
-                    // const serviceName = `${ControllerClass.name.replace('Controller', '')}Service`;
-                    // const serviceInstance = container.resolve(serviceName);
-
-                    // if (!serviceInstance) {
-                    //     console.warn(`  [Warning] Could not resolve service '${serviceName}' for controller '${ControllerClass.name}'. Skipping.`);
-                    //     continue;
-                    // }
-
-                    // Instanciando o controlador sem passar um serviço automaticamente
                     const paramTypes: Constructor[] = Reflect.getMetadata('design:paramtypes', ControllerClass) || [];
                     let controllerInstance;
 
                     if (paramTypes.length > 0) {
-                        // Se o controlador tem parâmetros no construtor, tentar resolvê-los como serviços
                         const dependencies = paramTypes.map(paramType => {
-                            // Assumimos que o nome do parâmetro do construtor corresponde ao nome do serviço registrado
                             return container.resolve(paramType.name);
                         });
                         controllerInstance = new ControllerClass(...dependencies);
                     } else {
-                        // Se não tem parâmetros no construtor, instanciar diretamente
                         controllerInstance = new ControllerClass();
                     }
 
@@ -160,7 +149,7 @@ async function startServer() {
                         if (typeof app[method] === 'function') {
                             app[method](fullPath, route.options, (req: FastifyRequest, reply: FastifyReply) => {
                                 const args = [];
-                                                                const params = Reflect.getMetadata(paramMetadataKey, controllerInstance, route.handlerName) || [];
+                                const params = Reflect.getMetadata(paramMetadataKey, controllerInstance, route.handlerName) || [];
                                 params.forEach((param: any) => {
                                     args[param.index] = (req.params as any)[param.name];
                                 });

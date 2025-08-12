@@ -17,6 +17,7 @@ export const env = {
   // Authentication Model Configuration
   AUTH_MODEL_NAME: process.env.AUTH_MODEL_NAME || 'User',
   AUTH_USERNAME_FIELD: process.env.AUTH_USERNAME_FIELD || 'username',
+  AUTH_EMAIL_FIELD: process.env.AUTH_EMAIL_FIELD || 'email', // Added for flexible login
   AUTH_PASSWORD_FIELD: process.env.AUTH_PASSWORD_FIELD || 'password',
 
   // Database - No default values. These MUST be in the .env file.

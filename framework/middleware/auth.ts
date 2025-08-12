@@ -1,17 +1,19 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import jwt from 'jsonwebtoken';
 import { redisClient } from '../cache/redis';
+import { sequelize } from '../config/sequelize';
+import { env } from '../config/env';
 
 interface UserPayload {
   id: string;
-  username: string; // Adicionado username para o payload do JWT
-  roles?: string[]; // Tornar opcional se não for sempre usado
+  username: string;
+  roles?: string[];
 }
 
 declare module 'fastify' {
   interface FastifyRequest {
     user?: UserPayload;
-    cookies: { [key: string]: string | undefined }; // Tipagem mais precisa para cookies
+    cookies: { [key: string]: string | undefined };
   }
 }
 
@@ -19,17 +21,30 @@ export const authenticate = (secret: string, publicRoutes: string[] = []) => {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const requestPathname = new URL(request.url, `http://${request.headers.host}`).pathname;
 
-    if (publicRoutes.includes(requestPathname)) {
-      return; // Permitir acesso sem autenticação
+    // Exception for creating the first user
+    if (request.method === 'POST' && requestPathname === '/users') {
+      try {
+        const User = sequelize.model('User');
+        const userCount = await User.count();
+        if (userCount === 0) {
+          console.log('[SECURITY WARNING] No users found. Allowing public access to POST /users to create the first admin.');
+          return; // Allow request to proceed without a token
+        }
+      } catch (e) {
+        // This might happen if the User model or table doesn't exist yet, which is fine.
+        // The request will proceed and likely be handled by the standard auth flow.
+      }
+    }
+
+    if (publicRoutes.some(route => requestPathname.startsWith(route))) {
+      return; // Allow access to public routes
     }
 
     let token: string | undefined;
 
-    // Tentar obter o token do cookie
     if (request.cookies && request.cookies.token) {
       token = request.cookies.token;
     } else {
-      // Tentar obter o token do header Authorization
       const authHeader = request.headers.authorization;
       if (authHeader && authHeader.startsWith('Bearer ')) {
         token = authHeader.split(' ')[1];
@@ -37,16 +52,13 @@ export const authenticate = (secret: string, publicRoutes: string[] = []) => {
     }
 
     if (!token) {
-      // Lidar com requisições não autenticadas
-      if (request.headers.accept && request.headers.accept.includes('text/html')) {
-        return reply.redirect('/login.html'); // Redirecionar para a página de login
-      } else {
-        return reply.code(401).send({ message: 'No token provided' });
+      if (request.headers.accept?.includes('text/html')) {
+        return reply.redirect('/login.html');
       }
+      return reply.code(401).send({ message: 'Authentication token is required.' });
     }
 
     try {
-      // Verificar se o token está na blocklist
       if (redisClient) {
         const isBlocked = await redisClient.get(`blocklist:${token}`);
         if (isBlocked) {
@@ -57,28 +69,52 @@ export const authenticate = (secret: string, publicRoutes: string[] = []) => {
       const payload = jwt.verify(token, secret) as UserPayload;
       request.user = payload;
     } catch (error) {
-      // Lidar com token inválido
-      if (request.headers.accept && request.headers.accept.includes('text/html')) {
-        return reply.redirect('/login.html'); // Redirecionar para a página de login
-      } else {
-        return reply.code(403).send({ message: 'Invalid token' });
+      if (request.headers.accept?.includes('text/html')) {
+        return reply.redirect('/login.html');
       }
+      return reply.code(403).send({ message: 'Invalid or expired token.' });
     }
   };
 };
 
 export const authorize = (allowedRoles: string[]) => {
-  return (request: FastifyRequest, reply: FastifyReply) => {
+  return (request: FastifyRequest, reply: FastifyReply, done: Function) => {
     if (!request.user || !request.user.roles) {
       return reply.code(403).send({ message: 'Access denied: No user roles found' });
     }
 
-    const userRoles = request.user.roles;
-
-    const hasPermission = allowedRoles.some(role => userRoles.includes(role));
+    const hasPermission = allowedRoles.some(role => request.user!.roles!.includes(role));
 
     if (!hasPermission) {
       return reply.code(403).send({ message: 'Access denied: Insufficient permissions' });
     }
+    
+    done();
   };
+};
+
+export const generateToken = (user: any, secret: string, expiresIn: string = '1h'): string => {
+  const payload: UserPayload = {
+    id: user.id,
+    username: user.username,
+    roles: user.roles || [],
+  };
+
+  const options: jwt.SignOptions = {
+    expiresIn: expiresIn as any,
+  };
+
+  return jwt.sign(payload, secret, options);
+};
+
+export const blocklistToken = async (token: string): Promise<void> => {
+  if (redisClient) {
+    const decoded = jwt.decode(token) as { exp?: number };
+    if (decoded && decoded.exp) {
+      const expiry = decoded.exp - Math.floor(Date.now() / 1000);
+      if (expiry > 0) {
+        await redisClient.setex(`blocklist:${token}`, expiry, 'blocked');
+      }
+    }
+  }
 };
